@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Production build outputs
+dist/
+dist-ssr/
+*.tsbuildinfo
+
+# Rust build artifacts
+src-tauri/target/
+
+# Tauri bundles & temporary artifacts
+src-tauri/gen/
+**/*.AppImage
+**/*.deb
+**/*.rpm
+*.cbz
+
+# Environment files & Secrets (Strictly enforced by git-guardian)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.secret
+credentials.json
+tokens.json
+
+# Logs & Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+cargo-debug.log*
+
+# System & Editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
