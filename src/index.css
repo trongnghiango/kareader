@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #111c18;
+  --bg-dark: #0c1512;
+  --bg-lighter: #1d2e27;
+  --fg: #C1C497;
+  --accent: #509475;
+  --muted: #53685B;
+  --border: rgba(80, 148, 117, 0.25);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: 'IBM Plex Mono', monospace, -apple-system, BlinkMacSystemFont, sans-serif;
+  user-select: none;
+  overflow: hidden;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-dark);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
