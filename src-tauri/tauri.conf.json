@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "omawrite-reader",
+  "productName": "kareader",
   "version": "0.1.0",
-  "identifier": "org.omarchy.omawrite.reader",
+  "identifier": "org.omarchy.kareader",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Omawrite Reader",
+        "title": "Kareader",
         "width": 1280,
         "height": 820,
         "minWidth": 900,

@@ -1769,6 +1769,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "kareader"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "dirs 5.0.1",
+ "epub",
+ "epub-builder",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
+ "ssh2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "walkdir",
+ "zip 0.6.6",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2241,27 +2262,6 @@ dependencies = [
  "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-foundation",
-]
-
-[[package]]
-name = "omawrite-reader"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "dirs 5.0.1",
- "epub",
- "epub-builder",
- "pulldown-cmark",
- "regex",
- "serde",
- "serde_json",
- "ssh2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "walkdir",
- "zip 0.6.6",
 ]
 
 [[package]]

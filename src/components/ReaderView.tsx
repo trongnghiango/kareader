@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { invoke, convertFileSrc, isTauri } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import {
   ArrowLeft,
   BookOpen,
@@ -39,7 +39,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   onNotify,
 }) => {
   // Saved reading position in localStorage
-  const storageKey = `omawrite_reader_pos_${session.path}`;
+  const storageKey = `kareader_pos_${session.path}`;
   const savedPos = (() => {
     try {
       const raw = localStorage.getItem(storageKey);
@@ -62,38 +62,58 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   // Typography & Theme state with localStorage
   const [theme, setTheme] = useState<ReaderTheme>(() => {
-    return (localStorage.getItem('omawrite_reader_theme') as ReaderTheme) || 'omarchy';
+    return (
+      (localStorage.getItem('kareader_theme') ||
+        localStorage.getItem('omawrite_reader_theme')) as ReaderTheme
+    ) || 'omarchy';
   });
   const [fontSize, setFontSize] = useState<number>(() => {
-    return Number(localStorage.getItem('omawrite_reader_fontsize')) || 18;
+    return (
+      Number(
+        localStorage.getItem('kareader_fontsize') ||
+          localStorage.getItem('omawrite_reader_fontsize')
+      ) || 18
+    );
   });
   const [fontFamily, setFontFamily] = useState<string>(() => {
-    return localStorage.getItem('omawrite_reader_fontfamily') || 'IBM Plex Mono';
+    return (
+      localStorage.getItem('kareader_fontfamily') ||
+      localStorage.getItem('omawrite_reader_fontfamily') ||
+      'JetBrainsMono Nerd Font'
+    );
   });
   const [lineHeight, setLineHeight] = useState<number>(() => {
-    return Number(localStorage.getItem('omawrite_reader_lineheight')) || 1.8;
+    return (
+      Number(
+        localStorage.getItem('kareader_lineheight') ||
+          localStorage.getItem('omawrite_reader_lineheight')
+      ) || 1.8
+    );
   });
   const [maxWidth, setMaxWidth] = useState<'normal' | 'wide' | 'full'>(() => {
-    return (localStorage.getItem('omawrite_reader_maxwidth') as any) || 'normal';
+    return (
+      ((localStorage.getItem('kareader_maxwidth') ||
+        localStorage.getItem('omawrite_reader_maxwidth')) as any) || 'normal'
+    );
   });
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Save preferences
   useEffect(() => {
-    localStorage.setItem('omawrite_reader_theme', theme);
+    localStorage.setItem('kareader_theme', theme);
   }, [theme]);
   useEffect(() => {
-    localStorage.setItem('omawrite_reader_fontsize', fontSize.toString());
+    localStorage.setItem('kareader_fontsize', fontSize.toString());
   }, [fontSize]);
   useEffect(() => {
-    localStorage.setItem('omawrite_reader_fontfamily', fontFamily);
+    localStorage.setItem('kareader_fontfamily', fontFamily);
   }, [fontFamily]);
   useEffect(() => {
-    localStorage.setItem('omawrite_reader_lineheight', lineHeight.toString());
+    localStorage.setItem('kareader_lineheight', lineHeight.toString());
   }, [lineHeight]);
   useEffect(() => {
-    localStorage.setItem('omawrite_reader_maxwidth', maxWidth);
+    localStorage.setItem('kareader_maxwidth', maxWidth);
   }, [maxWidth]);
 
   // Load a chapter by index
@@ -249,21 +269,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <button
               onClick={onClose}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition-all cursor-pointer ${themeStyles.border} hover:opacity-80`}
+              className={`p-2 rounded-lg border text-xs font-mono transition-all cursor-pointer ${themeStyles.border} hover:opacity-80`}
               title="Quay lại Thư viện (Esc)"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Thư viện</span>
             </button>
 
             {onOpenEditor && (
               <button
                 onClick={onOpenEditor}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition-all cursor-pointer ${themeStyles.border} hover:opacity-80`}
-                title="Quay lại Trình soạn thảo (Omawrite)"
+                className={`p-2 rounded-lg border text-xs font-mono transition-all cursor-pointer ${themeStyles.border} hover:opacity-80`}
+                title="Quay lại Trình soạn thảo (Kareader)"
               >
                 <Edit3 className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Soạn thảo</span>
               </button>
             )}
 
@@ -294,26 +312,24 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             {/* Table of Contents Button */}
             <button
               onClick={() => setIsTocOpen(!isTocOpen)}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition-all cursor-pointer ${
-                isTocOpen ? 'bg-black/20 font-semibold' : ''
+              className={`p-2 rounded-lg border text-xs font-mono transition-all cursor-pointer ${
+                isTocOpen ? 'bg-black/20 font-semibold ring-1 ring-emerald-500' : ''
               } ${themeStyles.border}`}
               title="Mục lục & Các chương (T)"
             >
               <List className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Mục lục</span>
             </button>
 
             {/* Typography & Theme Popover Toggle */}
             <div className="relative">
               <button
                 onClick={() => setIsStyleMenuOpen(!isStyleMenuOpen)}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition-all cursor-pointer ${
-                  isStyleMenuOpen ? 'bg-black/20 font-semibold' : ''
+                className={`p-2 rounded-lg border text-xs font-mono transition-all cursor-pointer ${
+                  isStyleMenuOpen ? 'bg-black/20 font-semibold ring-1 ring-emerald-500' : ''
                 } ${themeStyles.border}`}
                 title="Tùy chỉnh font chữ & giao diện đọc"
               >
                 <Type className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Giao diện</span>
               </button>
 
               {/* Style & Theme Dropdown Menu */}
@@ -438,11 +454,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             {['md', 'txt', 'markdown'].includes(session.format.toLowerCase()) && session.raw_text && onEditBook && (
               <button
                 onClick={() => onEditBook(session.path, session.filename, session.raw_text!)}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition-all cursor-pointer ${themeStyles.border} hover:opacity-80`}
-                title="Mở chỉnh sửa trực tiếp tệp này trong Omawrite"
+                className={`p-2 rounded-lg border text-xs font-mono transition-all cursor-pointer ${themeStyles.border} hover:opacity-80`}
+                title="Mở chỉnh sửa trực tiếp tệp này trong Kareader"
               >
                 <Edit3 className="w-3.5 h-3.5 text-emerald-400" />
-                <span className="hidden md:inline">Sửa file</span>
               </button>
             )}
 
@@ -450,11 +465,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             <button
               onClick={handleSync}
               disabled={syncing}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#509475] hover:bg-[#63b07a] text-[#0c1512] font-semibold text-xs font-mono transition-all cursor-pointer shadow-sm active:scale-95`}
+              className={`p-2 rounded-lg bg-[#509475] hover:bg-[#63b07a] text-[#0c1512] font-semibold text-xs font-mono transition-all cursor-pointer shadow-sm active:scale-95`}
               title="Bắn trực tiếp sang KOReader qua Wi-Fi SFTP"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">{syncing ? 'Đang gửi...' : 'Gửi Kindle'}</span>
             </button>
 
             {/* Zen Mode Button */}
@@ -481,7 +495,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       {isZenMode && (
         <button
           onClick={() => setIsZenMode(false)}
-          className="fixed top-3 right-4 z-50 p-2 rounded-full bg-black/60 text-white/80 hover:text-white backdrop-blur-md border border-white/20 transition-all cursor-pointer shadow-xl hover:scale-110"
+          className="fixed top-3 right-4 z-50 p-2 rounded-full bg-black/60 text-white/80 hover:text-white  border border-white/20 transition-all cursor-pointer shadow-xl hover:scale-110"
           title="Thoát chế độ Zen (Esc hoặc Z)"
         >
           <Minimize2 className="w-4 h-4" />
@@ -539,71 +553,60 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           onScroll={handleScroll}
           className="flex-1 h-full overflow-y-auto overflow-x-hidden flex flex-col items-center p-6 md:p-12 relative"
         >
-          {session.format === 'pdf' ? (
-            /* PDF native / iframe viewer via assetProtocol */
-            <div className="w-full h-full flex flex-col items-center">
-              <iframe
-                src={isTauri() ? convertFileSrc(session.path) : session.path}
-                className="w-full h-full rounded-lg border shadow-xl"
-                title={session.title}
+          {/* Universal Reader Canvas: EPUB / PDF / CBZ / Markdown / TXT */}
+          <article
+            className={`w-full ${maxWidthClass} transition-all duration-150`}
+            style={{
+              fontFamily: fontFamily,
+              fontSize: `${fontSize}px`,
+              lineHeight: lineHeight,
+            }}
+          >
+            {loadingChapter ? (
+              <div className="py-20 flex flex-col items-center justify-center opacity-60 font-mono text-xs gap-3">
+                <RefreshCw className="w-6 h-6 animate-spin text-[#509475]" />
+                <span>Đang tải nội dung...</span>
+              </div>
+            ) : (
+              <div
+                className="kareader-content omawrite-reader-content prose max-w-none focus:outline-none"
+                dangerouslySetInnerHTML={{ __html: chapterHtml }}
               />
-            </div>
-          ) : (
-            /* EPUB / Markdown / TXT reader content */
-            <article
-              className={`w-full ${maxWidthClass} transition-all duration-150`}
-              style={{
-                fontFamily: fontFamily,
-                fontSize: `${fontSize}px`,
-                lineHeight: lineHeight,
-              }}
-            >
-              {loadingChapter ? (
-                <div className="py-20 flex flex-col items-center justify-center opacity-60 font-mono text-xs gap-3">
-                  <RefreshCw className="w-6 h-6 animate-spin text-[#509475]" />
-                  <span>Đang tải nội dung chương...</span>
-                </div>
-              ) : (
-                <div
-                  className="omawrite-reader-content prose max-w-none focus:outline-none"
-                  dangerouslySetInnerHTML={{ __html: chapterHtml }}
-                />
-              )}
+            )}
 
-              {/* Bottom Multi-chapter Navigation */}
-              {session.total_chapters > 1 && !loadingChapter && (
-                <div className="mt-16 pt-8 border-t border-current opacity-30 flex items-center justify-between text-xs font-mono select-none">
-                  <button
-                    onClick={() => loadChapter(currentChapterIndex - 1)}
-                    disabled={currentChapterIndex <= 0}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-current disabled:opacity-20 hover:opacity-100 cursor-pointer disabled:cursor-not-allowed"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                    <span>Chương trước</span>
-                  </button>
+            {/* Bottom Multi-chapter / Multi-page Navigation */}
+            {session.total_chapters > 1 && !loadingChapter && (
+              <div className="mt-16 pt-8 border-t border-current opacity-30 flex items-center justify-between text-xs font-mono select-none">
+                <button
+                  onClick={() => loadChapter(currentChapterIndex - 1)}
+                  disabled={currentChapterIndex <= 0}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-current disabled:opacity-20 hover:opacity-100 cursor-pointer disabled:cursor-not-allowed"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>{session.format === 'pdf' || session.format === 'cbz' ? 'Trang trước' : 'Chương trước'}</span>
+                </button>
 
-                  <span className="opacity-80">
-                    Chương {currentChapterIndex + 1} / {session.total_chapters}
-                  </span>
+                <span className="opacity-80">
+                  {session.format === 'pdf' || session.format === 'cbz' ? 'Trang' : 'Chương'} {currentChapterIndex + 1} / {session.total_chapters}
+                </span>
 
-                  <button
-                    onClick={() => loadChapter(currentChapterIndex + 1)}
-                    disabled={currentChapterIndex >= session.total_chapters - 1}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-current disabled:opacity-20 hover:opacity-100 cursor-pointer disabled:cursor-not-allowed"
-                  >
-                    <span>Chương sau</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-            </article>
-          )}
+                <button
+                  onClick={() => loadChapter(currentChapterIndex + 1)}
+                  disabled={currentChapterIndex >= session.total_chapters - 1}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-current disabled:opacity-20 hover:opacity-100 cursor-pointer disabled:cursor-not-allowed"
+                >
+                  <span>{session.format === 'pdf' || session.format === 'cbz' ? 'Trang kế' : 'Chương sau'}</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </article>
         </div>
       </div>
 
       {/* Reader CSS overrides for parsed EPUB & Markdown content */}
       <style>{'\
-        .omawrite-reader-content {\
+        .kareader-content, .omawrite-reader-content {\
           word-break: break-word;\
         }\
         .omawrite-reader-content p {\

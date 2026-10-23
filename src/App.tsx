@@ -1,13 +1,20 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Header } from './components/Header';
-import { EditorView } from './components/EditorView';
+import { CornerHUD } from './components/CornerHUD';
+import { EditorView, EditorViewRef } from './components/EditorView';
 import { LibraryView } from './components/LibraryView';
 import { ReaderView } from './components/ReaderView';
 import { SettingsModal } from './components/SettingsModal';
-import { AppSettings, BookMetadata, EditorDocument, OmarchyTheme, ReaderSession, TransferResult } from './types';
+import {
+  AppSettings,
+  BookMetadata,
+  EditorDocument,
+  OmarchyTheme,
+  ReaderSession,
+  TransferResult,
+} from './types';
 import { CheckCircle2, AlertCircle, X, Upload } from 'lucide-react';
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -16,8 +23,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   kindle_user: 'root',
   kindle_password: '',
   remote_books_dir: '/mnt/us/documents/Books',
-  local_library_dir: '/home/ka/Books',
-  editor_font: 'IBM Plex Mono',
+  local_library_dir: '/home/ka/.local/share/kareader/books',
+  editor_font: 'JetBrainsMono Nerd Font',
 };
 
 export const App: React.FC = () => {
@@ -30,6 +37,25 @@ export const App: React.FC = () => {
   const [kindleConnected, setKindleConnected] = useState<boolean | null>(null);
   const [checkingConnection, setCheckingConnection] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [savingDoc, setSavingDoc] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<string>('Tài liệu mới');
+
+  // Font size state
+  const [fontSize, setFontSize] = useState<number>(() => {
+    return (
+      Number(
+        localStorage.getItem('kareader_font_size') ||
+          localStorage.getItem('omawrite_font_size')
+      ) || 18
+    );
+  });
+
+  // Editor document statistics
+  const [docStats, setDocStats] = useState({
+    wordCount: 0,
+    charCount: 0,
+    readingTimeMinutes: 1,
+  });
 
   // Active Reader Session
   const [readingSession, setReadingSession] = useState<ReaderSession | null>(null);
@@ -44,14 +70,15 @@ export const App: React.FC = () => {
 
 ## Tính năng nổi bật
 - Soạn thảo và chỉnh sửa trực tiếp các tệp văn bản trên máy tính.
-- Mở và lưu trực tiếp không qua trung gian.
-- Xem trước và đọc sách với chế độ Zen Reader.
+- Giao diện 4 góc Zen HUD tối giản, không chiếm dụng không gian.
+- Kháng hoàn toàn lỗi nuốt chữ bộ gõ tiếng Việt Fcitx5.
 - Đồng bộ 1-Click sang KOReader qua Wi-Fi SFTP.
 `,
     author: 'Ka',
     isDirty: false,
   });
 
+  const editorRef = useRef<EditorViewRef | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
 
@@ -119,13 +146,29 @@ export const App: React.FC = () => {
       .then((f) => setFonts(f))
       .catch(() => {});
 
-    // Load settings
+    // Global shortcuts: F2 or Ctrl+L toggles between Editor and Local Library
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (
+        (e.key === 'F2') ||
+        ((e.ctrlKey || e.metaKey) && (e.key === 'l' || e.key === 'L'))
+      ) {
+        e.preventDefault();
+        setCurrentTab((prev) => (prev === 'local' ? 'editor' : 'local'));
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+
+    // Load settings with strict font sanitization
     invoke<AppSettings>('load_settings')
       .then((loaded) => {
+        const cleanFont =
+          loaded.editor_font && loaded.editor_font.toLowerCase() !== 'omarchy'
+            ? loaded.editor_font
+            : 'JetBrainsMono Nerd Font';
         setSettings({
           ...loaded,
           kindle_user: loaded.kindle_user || 'root',
-          editor_font: loaded.editor_font || 'IBM Plex Mono',
+          editor_font: cleanFont,
         });
       })
       .catch(() => {});
@@ -149,21 +192,24 @@ export const App: React.FC = () => {
             setIsDragging(false);
             const paths = event.payload.paths;
             if (paths && paths.length > 0) {
-              notify(`Đang nhập ${paths.length} file vào thư viện...`, 'success');
+              notify(`Đang nạp ${paths.length} file vào thư viện...`, 'success');
               let firstImportedPath = '';
               for (const p of paths) {
                 try {
                   const dest = await invoke<string>('import_file_to_library', { sourcePath: p });
                   if (!firstImportedPath) firstImportedPath = dest;
                 } catch (err: any) {
-                  notify(`Lỗi nhập ${p}: ${String(err)}`, 'error');
+                  notify(`Lỗi nạp ${p}: ${String(err)}`, 'error');
                 }
               }
               notify(`Đã nạp thành công các tệp vào thư viện!`, 'success');
               refreshLibrary();
 
-              // If user drops a markdown or text file while in editor, offer or open directly
-              if (firstImportedPath && (firstImportedPath.endsWith('.md') || firstImportedPath.endsWith('.txt'))) {
+              // Open markdown directly if dropped
+              if (
+                firstImportedPath &&
+                (firstImportedPath.endsWith('.md') || firstImportedPath.endsWith('.txt'))
+              ) {
                 try {
                   const content = await invoke<string>('read_text_file', { path: firstImportedPath });
                   const fname = firstImportedPath.split('/').pop() || 'tai-lieu.md';
@@ -174,10 +220,11 @@ export const App: React.FC = () => {
                     content,
                     isDirty: false,
                   });
+                  setSaveStatus(`Đã mở: ${fname}`);
                   setCurrentTab('editor');
                   notify(`Đã mở trực tiếp "${fname}" vào trình soạn thảo`, 'success');
                 } catch {
-                  // Ignore if error
+                  // Ignore
                 }
               }
             }
@@ -188,7 +235,7 @@ export const App: React.FC = () => {
         })
         .catch(() => {});
     } catch {
-      // Ignore if not in Tauri window context
+      // Ignore
     }
 
     return () => {
@@ -220,6 +267,12 @@ export const App: React.FC = () => {
     notify(`Đã chọn font: ${font}`, 'success');
   };
 
+  // Font Size Change
+  const handleChangeFontSize = (size: number) => {
+    setFontSize(size);
+    localStorage.setItem('kareader_font_size', String(size));
+  };
+
   // Test Connection
   const handleTestConnection = async (ip: string, port: number, user: string, password: string) => {
     return await invoke<string>('test_kindle_connection', {
@@ -231,31 +284,60 @@ export const App: React.FC = () => {
   };
 
   // Save Document DIRECTLY to File
-  const handleSaveDoc = async (docToSave: EditorDocument): Promise<string> => {
-    let targetPath = docToSave.path;
+  const handleSaveCurrentDoc = useCallback(async (): Promise<string> => {
+    setSavingDoc(true);
+    const contentToSave = editorRef.current ? editorRef.current.getCurrentText() : currentDoc.content;
 
+    let targetPath = currentDoc.path;
     if (!targetPath) {
-      // If document is not yet saved to a path, place it in local library folder
-      const cleanName = docToSave.filename.endsWith('.md')
-        ? docToSave.filename
-        : `${docToSave.filename}.md`;
+      const cleanName = currentDoc.filename.endsWith('.md')
+        ? currentDoc.filename
+        : `${currentDoc.filename}.md`;
       targetPath = `${settings.local_library_dir}/${cleanName}`;
     }
 
-    await invoke<string>('save_markdown_file', {
-      path: targetPath,
-      content: docToSave.content,
-    });
+    try {
+      await invoke<string>('save_markdown_file', {
+        path: targetPath,
+        content: contentToSave,
+      });
 
-    const updatedDoc: EditorDocument = {
-      ...docToSave,
-      path: targetPath,
-      isDirty: false,
-    };
-    setCurrentDoc(updatedDoc);
-    refreshLibrary();
-    return targetPath;
+      setCurrentDoc((prev) => ({
+        ...prev,
+        path: targetPath,
+        content: contentToSave,
+        isDirty: false,
+      }));
+
+      const timeStr = new Date().toLocaleTimeString();
+      setSaveStatus(`✓ Đã lưu lúc ${timeStr}`);
+      notify(`Đã lưu trực tiếp: ${currentDoc.filename}`, 'success');
+      refreshLibrary();
+      return targetPath;
+    } catch (e: any) {
+      notify(`Lỗi lưu file: ${String(e)}`, 'error');
+      throw e;
+    } finally {
+      setSavingDoc(false);
+    }
+  }, [currentDoc.path, currentDoc.filename, currentDoc.content, settings.local_library_dir, notify, refreshLibrary]);
+
+  // Rename Document
+  const handleRenameDoc = (filename: string, author: string) => {
+    setCurrentDoc((prev) => ({
+      ...prev,
+      filename,
+      author,
+      isDirty: true,
+    }));
+    setSaveStatus('● Chưa lưu (Ctrl+S)');
   };
+
+  // Stable callback for document dirty changes without triggering re-render cascades
+  const handleDocChangeDirty = useCallback((dirty: boolean) => {
+    setCurrentDoc((prev) => (prev.isDirty === dirty ? prev : { ...prev, isDirty: dirty }));
+    if (dirty) setSaveStatus('● Chưa lưu (Ctrl+S)');
+  }, []);
 
   // Create New Document
   const handleNewDoc = () => {
@@ -267,6 +349,7 @@ export const App: React.FC = () => {
       author: 'Ka',
       isDirty: false,
     });
+    setSaveStatus('Tài liệu mới');
     setCurrentTab('editor');
     notify('Đã tạo tài liệu mới', 'success');
   };
@@ -290,8 +373,9 @@ export const App: React.FC = () => {
           content,
           isDirty: false,
         });
+        setSaveStatus(`Đã mở: ${filename}`);
         setCurrentTab('editor');
-        notify(`Đã mở thành công tệp: ${filename}`, 'success');
+        notify(`Đã mở thành công: ${filename}`, 'success');
       }
     } catch (e: any) {
       notify(`Lỗi mở file: ${String(e)}`, 'error');
@@ -301,7 +385,7 @@ export const App: React.FC = () => {
   // Edit Book directly from Library or Reader
   const handleEditBook = async (book: BookMetadata) => {
     try {
-      notify(`Đang mở "${book.filename}" để chỉnh sửa...`, 'success');
+      notify(`Đang nạp "${book.filename}" để chỉnh sửa...`, 'success');
       const content = await invoke<string>('read_text_file', { path: book.path });
       setCurrentDoc({
         path: book.path,
@@ -310,10 +394,11 @@ export const App: React.FC = () => {
         content,
         isDirty: false,
       });
+      setSaveStatus(`Đã mở: ${book.filename}`);
       setCurrentTab('editor');
-      notify(`Đã nạp file "${book.filename}" vào trình soạn thảo`, 'success');
+      notify(`Đã mở "${book.filename}" vào trình soạn thảo`, 'success');
     } catch (e: any) {
-      notify(`Không thể mở tệp để sửa: ${String(e)}`, 'error');
+      notify(`Không thể mở tệp: ${String(e)}`, 'error');
     }
   };
 
@@ -326,32 +411,37 @@ export const App: React.FC = () => {
       content,
       isDirty: false,
     });
+    setSaveStatus(`Đã nạp: ${filename}`);
     setCurrentTab('editor');
     notify(`Đã nạp "${filename}" vào trình soạn thảo`, 'success');
   };
 
   // Sync Markdown / EPUB to Kindle KOReader
-  const handleSyncMarkdownToKindle = async (
-    title: string,
-    author: string,
-    content: string,
-    asEpub: boolean
-  ) => {
+  const handleSyncMarkdownToKindle = async (asEpub: boolean) => {
+    const contentToSend = editorRef.current ? editorRef.current.getCurrentText() : currentDoc.content;
+    const modeStr = asEpub ? 'EPUB' : 'Markdown (.md)';
+
+    notify(`Đang đồng bộ dạng ${modeStr} sang KOReader qua Wi-Fi...`, 'success');
     const res = await invoke<TransferResult>('send_markdown_to_kindle', {
       ip: settings.kindle_ip,
       port: settings.kindle_port,
       user: settings.kindle_user || 'root',
       password: settings.kindle_password || '',
       remoteDir: settings.remote_books_dir,
-      title,
-      author,
-      content,
+      title: currentDoc.filename,
+      author: currentDoc.author || 'Ka',
+      content: contentToSend,
       asEpub,
     });
+
     if (!res.success) {
+      notify(`Lỗi đồng bộ: ${res.message}`, 'error');
       throw new Error(res.message);
     }
+
+    notify(`Đã đồng bộ thành công "${currentDoc.filename}" sang KOReader!`, 'success');
     setKindleConnected(true);
+    setSaveStatus(`Đã gửi KOReader (${modeStr})`);
     refreshLibrary();
   };
 
@@ -401,7 +491,7 @@ export const App: React.FC = () => {
       if (selected && typeof selected === 'string') {
         notify('Đang sao chép file vào thư viện...', 'success');
         const imported = await invoke<string>('import_file_to_library', { sourcePath: selected });
-        notify(`Đã nhập thành công: ${imported}`, 'success');
+        notify(`Đã nạp thành công: ${imported}`, 'success');
         refreshLibrary();
       }
     } catch (e: any) {
@@ -421,26 +511,10 @@ export const App: React.FC = () => {
     }
   };
 
-  // Read current draft from Editor
-  const handleReadCurrentDocument = async (docToRead: EditorDocument) => {
-    try {
-      let filePath = docToRead.path;
-      if (!filePath) {
-        filePath = await handleSaveDoc(docToRead);
-      } else {
-        await invoke('save_markdown_file', { path: filePath, content: docToRead.content });
-      }
-      const session = await invoke<ReaderSession>('open_book_reader', { path: filePath });
-      setReadingSession(session);
-      setCurrentTab('reader');
-    } catch (e: any) {
-      notify(`Lỗi đọc tài liệu: ${String(e)}`, 'error');
-    }
-  };
-
   // Export Dialog
   const handleExportCurrent = async () => {
     try {
+      const content = editorRef.current ? editorRef.current.getCurrentText() : currentDoc.content;
       const filePath = await save({
         defaultPath: currentDoc.filename,
         filters: [
@@ -453,11 +527,11 @@ export const App: React.FC = () => {
           await invoke('export_markdown_to_epub', {
             title: currentDoc.filename.replace(/\.[^/.]+$/, ''),
             author: currentDoc.author || 'Ka',
-            markdownContent: currentDoc.content,
+            markdownContent: content,
             outputFile: filePath,
           });
         } else {
-          await invoke('save_markdown_file', { path: filePath, content: currentDoc.content });
+          await invoke('save_markdown_file', { path: filePath, content });
         }
         notify(`Đã xuất file thành công ra: ${filePath}`, 'success');
       }
@@ -467,27 +541,41 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#111c18] text-[#C1C497]">
-      {/* Header Bar (Hidden when in Reader mode to eliminate double headers) */}
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#111c18] text-[#C1C497] relative select-none">
+      {/* 4-Corner HUD: Absolute Minimalist Omarchy Experience */}
       {currentTab !== 'reader' && (
-        <Header
-          currentTab={currentTab}
-          onTabChange={setCurrentTab}
-          settings={settings}
-          kindleConnected={kindleConnected}
-          checkingConnection={checkingConnection}
-          syncing={syncingAll}
-          readingBookTitle={readingSession?.title}
-          onSyncAll={handleSyncAll}
-          onCheckConnection={checkConnection}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onImportFile={handleImportFile}
-          onExportCurrent={handleExportCurrent}
+        <CornerHUD
+        currentTab={currentTab}
+        onTabChange={setCurrentTab}
+        doc={currentDoc}
+        onNewDoc={handleNewDoc}
+        onOpenFile={handleOpenFileFromDisk}
+        onImportFile={handleImportFile}
+        onSaveDoc={handleSaveCurrentDoc}
+        saving={savingDoc}
+        saveStatus={saveStatus}
+        onRenameDoc={handleRenameDoc}
+        settings={settings}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+        kindleConnected={kindleConnected}
+        checkingConnection={checkingConnection}
+        onCheckConnection={checkConnection}
+        onSyncCurrentToKindle={handleSyncMarkdownToKindle}
+        onSyncAll={handleSyncAll}
+        syncing={syncingAll}
+        onExportFile={handleExportCurrent}
+        readingBookTitle={readingSession?.title}
+        fonts={fonts}
+        currentFont={settings.editor_font || 'JetBrainsMono Nerd Font'}
+        onSelectFont={handleSelectFont}
+        fontSize={fontSize}
+        onChangeFontSize={handleChangeFontSize}
+        stats={docStats}
         />
       )}
 
-      {/* Main Content Area */}
-      <main className="flex-1 flex overflow-hidden">
+      {/* Main Viewport Content Area: 100% Fullscreen Canvas */}
+      <main className="flex-1 flex w-full h-full overflow-hidden">
         {currentTab === 'reader' && readingSession ? (
           <ReaderView
             session={readingSession}
@@ -500,30 +588,27 @@ export const App: React.FC = () => {
           />
         ) : currentTab === 'editor' ? (
           <EditorView
+            key={currentDoc.path || currentDoc.filename}
             doc={currentDoc}
-            settings={settings}
-            fonts={fonts}
-            currentFont={settings.editor_font || 'IBM Plex Mono'}
-            onSelectFont={handleSelectFont}
-            onSaveDoc={handleSaveDoc}
-            onNewDoc={handleNewDoc}
-            onOpenFile={handleOpenFileFromDisk}
+            currentFont={settings.editor_font || 'JetBrainsMono Nerd Font'}
+            fontSize={fontSize}
+            onDocChangeDirty={handleDocChangeDirty}
+            onStatsChange={setDocStats}
+            onSaveShortcut={handleSaveCurrentDoc}
             onOpenLibrary={() => setCurrentTab('local')}
-            onOpenInReader={handleReadCurrentDocument}
-            onSyncMarkdownToKindle={handleSyncMarkdownToKindle}
-            onNotify={notify}
+            editorRef={editorRef}
           />
         ) : (
           <LibraryView
-            books={books}
-            settings={settings}
-            loading={loadingBooks}
-            mode={currentTab === 'kindle' ? 'kindle' : 'local'}
-            onRefresh={refreshLibrary}
-            onOpenBook={handleOpenBook}
-            onEditBook={handleEditBook}
-            onSyncBookToKindle={handleSyncBookToKindle}
-            onNotify={notify}
+              books={books}
+              settings={settings}
+              loading={loadingBooks}
+              mode={currentTab === 'kindle' ? 'kindle' : 'local'}
+              onRefresh={refreshLibrary}
+              onOpenBook={handleOpenBook}
+              onEditBook={handleEditBook}
+              onSyncBookToKindle={handleSyncBookToKindle}
+              onNotify={notify}
           />
         )}
       </main>
@@ -539,7 +624,7 @@ export const App: React.FC = () => {
 
       {/* Drag and Drop Overlay */}
       {isDragging && (
-        <div className="fixed inset-0 z-50 bg-[#0c1512]/90 backdrop-blur-md border-4 border-dashed border-[#509475] flex flex-col items-center justify-center p-8 pointer-events-none animate-in fade-in duration-150">
+        <div className="fixed inset-0 z-50 bg-[#0c1512]/90  border-4 border-dashed border-[#509475] flex flex-col items-center justify-center p-8 pointer-events-none animate-in fade-in duration-150">
           <div className="w-20 h-20 rounded-2xl bg-[#509475]/20 flex items-center justify-center text-[#509475] mb-4">
             <Upload className="w-10 h-10 animate-bounce" />
           </div>
@@ -554,7 +639,7 @@ export const App: React.FC = () => {
 
       {/* Toast Notification */}
       {toast && (
-        <div className="fixed bottom-12 right-5 z-50 flex items-center gap-3 px-4 py-3 rounded-xl bg-[#0c1512] border border-[#509475] shadow-2xl text-xs font-mono animate-in slide-in-from-bottom duration-200">
+        <div className="fixed bottom-14 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-xl bg-[#0c1512] border border-[#509475] shadow-2xl text-xs font-mono animate-in slide-in-from-bottom duration-200">
           {toast.type === 'success' ? (
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
           ) : (

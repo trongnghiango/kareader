@@ -15,7 +15,7 @@ body {
   padding: 0;
   background-color: var(--bg);
   color: var(--fg);
-  font-family: 'IBM Plex Mono', monospace, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'JetBrainsMono Nerd Font', 'iA Writer Mono S', 'Adwaita Mono', monospace, sans-serif;
   user-select: none;
   overflow: hidden;
 }
@@ -29,6 +29,15 @@ input, textarea, [contenteditable="true"], .select-text {
 ::selection {
   background-color: rgba(80, 148, 117, 0.35) !important;
   color: #F7E8B2 !important;
+}
+
+/* Clean Zen Editor without junk scrollbars */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 
 /* Custom scrollbars */

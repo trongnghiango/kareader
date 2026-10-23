@@ -42,7 +42,7 @@ export const Header: React.FC<HeaderProps> = ({
               ? 'bg-[#509475] text-[#0c1512] border-[#509475] font-semibold shadow-sm'
               : 'bg-[#111c18] text-[#81B8A8] border-[#509475]/30 hover:border-[#509475] hover:text-[#F7E8B2]'
           }`}
-          title="Mở trình soạn thảo Markdown (Omawrite)"
+          title="Mở trình soạn thảo Markdown (Kareader)"
         >
           <Edit3 className="w-4 h-4" />
           <span className="text-xs">Soạn thảo</span>

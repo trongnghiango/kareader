@@ -1,12 +1,12 @@
 [package]
-name = "omawrite-reader"
+name = "kareader"
 version = "0.1.0"
-description = "Omawrite Reader - Minimalist Markdown Writer, Document Hub & Wireless KOReader Sync"
+description = "Kareader - Minimalist Markdown Writer, Document Hub & Wireless KOReader Sync"
 authors = ["Ka"]
 edition = "2021"
 
 [lib]
-name = "omawrite_reader_lib"
+name = "kareader_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

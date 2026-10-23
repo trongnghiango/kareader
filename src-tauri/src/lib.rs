@@ -11,7 +11,7 @@ use epub::doc::EpubDoc;
 use epub_builder::{EpubBuilder, EpubContent, ReferenceType, ZipLibrary};
 use pulldown_cmark::{html, Event, Options, Parser};
 use regex::Regex;
-use ssh2::Session;
+use ssh2::{OpenFlags, OpenType, Session};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OmarchyTheme {
@@ -52,13 +52,20 @@ pub struct AppSettings {
 }
 
 fn default_editor_font() -> String {
-    "IBM Plex Mono".to_string()
+    "JetBrainsMono Nerd Font".to_string()
+}
+
+fn get_default_data_dir() -> PathBuf {
+    let base = dirs::data_dir().unwrap_or_else(|| {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/ka"));
+        home.join(".local/share")
+    });
+    base.join("kareader").join("books")
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/ka"));
-        let default_lib = home.join("Books");
+        let default_lib = get_default_data_dir();
         Self {
             kindle_ip: "192.168.1.15".to_string(),
             kindle_port: 2222,
@@ -120,8 +127,11 @@ pub struct ReaderChapter {
 }
 
 fn get_config_dir() -> PathBuf {
-    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("/home/ka/.config"));
-    base.join("omawrite-reader")
+    let base = dirs::config_dir().unwrap_or_else(|| {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/ka"));
+        home.join(".config")
+    });
+    base.join("kareader")
 }
 
 fn authenticate_session(sess: &mut Session, username: &str, password: &str) -> Result<(), String> {
@@ -178,7 +188,7 @@ fn get_system_fonts() -> Vec<String> {
                 .lines()
                 .flat_map(|line| line.split(','))
                 .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty() && !s.starts_with('.'))
+                .filter(|s| !s.is_empty() && !s.starts_with('.') && s.to_lowercase() != "omarchy")
                 .collect();
             fonts.sort();
             fonts.dedup();
@@ -188,12 +198,10 @@ fn get_system_fonts() -> Vec<String> {
         }
     }
     vec![
-        "IBM Plex Mono".to_string(),
-        "iA Writer Duo S".to_string(),
-        "iA Writer Duospace".to_string(),
-        "iA Writer Mono S".to_string(),
-        "iA Writer Quattro S".to_string(),
         "JetBrainsMono Nerd Font".to_string(),
+        "iA Writer Mono S".to_string(),
+        "Adwaita Mono".to_string(),
+        "IBM Plex Mono".to_string(),
         "Adwaita Mono".to_string(),
         "Liberation Mono".to_string(),
         "monospace".to_string(),
@@ -232,39 +240,111 @@ fn load_omarchy_theme() -> OmarchyTheme {
 
 #[tauri::command]
 fn load_settings() -> AppSettings {
-    let config_path = get_config_dir().join("settings.json");
-    if config_path.exists() {
-        if let Ok(content) = fs::read_to_string(&config_path) {
-            if let Ok(mut settings) = serde_json::from_str::<AppSettings>(&content) {
-                if settings.kindle_user.trim().is_empty() {
-                    settings.kindle_user = "root".to_string();
+    let dir = get_config_dir();
+    let _ = fs::create_dir_all(&dir);
+
+    // Ensure standard Unix/Linux data directory exists (~/.local/share/kareader/books)
+    let default_data_dir = get_default_data_dir();
+    let _ = fs::create_dir_all(&default_data_dir);
+
+    // If default data dir is empty and legacy ~/Books exists, automatically seed/copy books across
+    if let Ok(entries) = fs::read_dir(&default_data_dir) {
+        if entries.count() == 0 {
+            if let Some(home) = dirs::home_dir() {
+                let old_books = home.join("Books");
+                if old_books.exists() && old_books.is_dir() {
+                    if let Ok(old_entries) = fs::read_dir(&old_books) {
+                        for entry in old_entries.flatten() {
+                            let src = entry.path();
+                            if src.is_file() {
+                                if let Some(fname) = src.file_name() {
+                                    let dest = default_data_dir.join(fname);
+                                    let _ = fs::copy(&src, &dest);
+                                }
+                            }
+                        }
+                    }
                 }
-                if settings.editor_font.trim().is_empty() {
-                    settings.editor_font = default_editor_font();
-                }
-                return settings;
             }
         }
     }
-    AppSettings::default()
+
+    // Standard Unix config: check config.json first, then settings.json
+    let config_json = dir.join("config.json");
+    let settings_json = dir.join("settings.json");
+
+    let loaded_str = if config_json.exists() {
+        fs::read_to_string(&config_json).ok()
+    } else if settings_json.exists() {
+        fs::read_to_string(&settings_json).ok()
+    } else {
+        // Fallback: check migration from legacy omawrite-reader if exists
+        let old_config = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("/home/ka/.config"))
+            .join("omawrite-reader")
+            .join("settings.json");
+        if old_config.exists() {
+            fs::read_to_string(&old_config).ok()
+        } else {
+            None
+        }
+    };
+
+    let mut settings = if let Some(content) = loaded_str {
+        serde_json::from_str::<AppSettings>(&content).unwrap_or_default()
+    } else {
+        AppSettings::default()
+    };
+
+    if settings.kindle_user.trim().is_empty() {
+        settings.kindle_user = "root".to_string();
+    }
+    if settings.editor_font.trim().is_empty() || settings.editor_font.to_lowercase() == "omarchy" {
+        settings.editor_font = default_editor_font();
+    }
+    if settings.local_library_dir.trim().is_empty() {
+        settings.local_library_dir = default_data_dir.to_string_lossy().to_string();
+    }
+
+    // Ensure config is persisted to .config/kareader/config.json
+    let _ = save_settings(settings.clone());
+
+    settings
 }
 
 #[tauri::command]
 fn save_settings(settings: AppSettings) -> Result<String, String> {
     let dir = get_config_dir();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let config_path = dir.join("settings.json");
+
     let mut clean_settings = settings;
     if clean_settings.kindle_user.trim().is_empty() {
         clean_settings.kindle_user = "root".to_string();
     }
+    if clean_settings.editor_font.trim().is_empty() || clean_settings.editor_font.to_lowercase() == "omarchy" {
+        clean_settings.editor_font = default_editor_font();
+    }
+    if clean_settings.local_library_dir.trim().is_empty() {
+        clean_settings.local_library_dir = get_default_data_dir().to_string_lossy().to_string();
+    }
+
+    // Ensure the data directory exists
+    let _ = fs::create_dir_all(Path::new(&clean_settings.local_library_dir));
+
     let json = serde_json::to_string_pretty(&clean_settings).map_err(|e| e.to_string())?;
-    fs::write(&config_path, json).map_err(|e| e.to_string())?;
-    Ok("Settings saved successfully".to_string())
+
+    // Standard Unix/Linux config file: ~/.config/kareader/config.json
+    let config_path = dir.join("config.json");
+    fs::write(&config_path, &json).map_err(|e| e.to_string())?;
+
+    // Also write settings.json for backward compatibility
+    let settings_path = dir.join("settings.json");
+    let _ = fs::write(&settings_path, &json);
+
+    Ok("Cấu hình Kareader đã được lưu thành công".to_string())
 }
 
-#[tauri::command]
-fn test_kindle_connection(
+fn test_kindle_connection_blocking(
     ip: String,
     port: u16,
     user: Option<String>,
@@ -276,8 +356,13 @@ fn test_kindle_connection(
         Duration::from_secs(4),
     ).map_err(|e| format!("Không thể kết nối tới KOReader tại {}: {}", addr, e))?;
 
+    let _ = socket.set_nodelay(true);
+    let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = socket.set_write_timeout(Some(Duration::from_secs(5)));
+
     let mut sess = Session::new().map_err(|e| e.to_string())?;
     sess.set_tcp_stream(socket);
+    sess.set_timeout(5000);
     sess.handshake().map_err(|e| format!("SSH Handshake thất bại: {}", e))?;
     
     let username = user.unwrap_or_else(|| "root".to_string());
@@ -288,7 +373,36 @@ fn test_kindle_connection(
 }
 
 #[tauri::command]
-fn send_book_to_kindle(
+async fn test_kindle_connection(
+    ip: String,
+    port: u16,
+    user: Option<String>,
+    password: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        test_kindle_connection_blocking(ip, port, user, password)
+    })
+    .await
+    .map_err(|e| format!("Lỗi tác vụ nền: {}", e))?
+}
+
+fn sftp_mkdir_p(sftp: &ssh2::Sftp, remote_dir: &str) {
+    let clean = remote_dir.trim_end_matches('/');
+    let mut current = String::new();
+    for part in clean.split('/') {
+        if part.is_empty() {
+            current.push('/');
+            continue;
+        }
+        if !current.ends_with('/') {
+            current.push('/');
+        }
+        current.push_str(part);
+        let _ = sftp.mkdir(Path::new(&current), 0o755);
+    }
+}
+
+fn send_book_to_kindle_blocking(
     ip: String,
     port: u16,
     user: Option<String>,
@@ -310,10 +424,16 @@ fn send_book_to_kindle(
     let socket = TcpStream::connect_timeout(
         &addr.parse().map_err(|e| format!("Địa chỉ Kindle không hợp lệ: {}", e))?,
         Duration::from_secs(5),
-    ).map_err(|e| format!("Không kết nối được tới Kindle tại {}: {}", addr, e))?;
+    ).map_err(|e| format!("Không kết nối được tới Kindle tại {}: {}. Vui lòng kiểm tra màn hình Kindle có sáng và đã bật SSH Server trong KOReader chưa.", addr, e))?;
+
+    // Enable TCP_NODELAY and socket timeouts to prevent freeze while allowing Kindle flash writes
+    let _ = socket.set_nodelay(true);
+    let _ = socket.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = socket.set_write_timeout(Some(Duration::from_secs(30)));
 
     let mut sess = Session::new().map_err(|e| e.to_string())?;
     sess.set_tcp_stream(socket);
+    sess.set_timeout(30_000); // 30 seconds per SFTP packet operation
     sess.handshake().map_err(|e| format!("SSH handshake thất bại: {}", e))?;
 
     let username = user.unwrap_or_else(|| "root".to_string());
@@ -322,19 +442,23 @@ fn send_book_to_kindle(
 
     let sftp = sess.sftp().map_err(|e| format!("Không mở được SFTP channel: {}", e))?;
 
-    let clean_remote_dir = if remote_dir.ends_with('/') {
-        remote_dir.trim_end_matches('/').to_string()
-    } else {
-        remote_dir
-    };
-    let _ = sftp.mkdir(Path::new(&clean_remote_dir), 0o755);
+    // Recursively ensure all remote parent directories exist
+    sftp_mkdir_p(&sftp, &remote_dir);
 
+    let clean_remote_dir = remote_dir.trim_end_matches('/');
     let remote_file_path = format!("{}/{}", clean_remote_dir, filename);
-    let mut remote_file = sftp.create(Path::new(&remote_file_path))
-        .map_err(|e| format!("Không thể tạo file trên Kindle: {}", e))?;
+
+    // Open remote file with WRITE | CREATE | TRUNCATE for clean overwrite
+    let mut remote_file = sftp.open_mode(
+        Path::new(&remote_file_path),
+        OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+        0o644,
+        OpenType::File,
+    ).map_err(|e| format!("Không thể tạo/mở file trên Kindle ({}): {}", remote_file_path, e))?;
 
     let mut local_file = File::open(path).map_err(|e| e.to_string())?;
-    let mut buffer = [0u8; 64 * 1024];
+    // Use 16KB buffer chunks: guarantees compatibility with libssh2 SFTP packet maxlen (30KB) and Dropbear
+    let mut buffer = [0u8; 16 * 1024];
     let mut total_written = 0u64;
 
     loop {
@@ -342,9 +466,20 @@ fn send_book_to_kindle(
         if bytes_read == 0 {
             break;
         }
-        remote_file.write_all(&buffer[..bytes_read]).map_err(|e| e.to_string())?;
-        total_written += bytes_read as u64;
+        let mut slice = &buffer[..bytes_read];
+        while !slice.is_empty() {
+            let written = remote_file.write(slice).map_err(|e| {
+                format!("Lỗi ghi dữ liệu SFTP (đã truyền {} bytes): {}", total_written, e)
+            })?;
+            if written == 0 {
+                return Err(format!("SFTP connection stalled sau khi truyền {} bytes", total_written));
+            }
+            slice = &slice[written..];
+            total_written += written as u64;
+        }
     }
+
+    let _ = remote_file.flush();
 
     Ok(TransferResult {
         success: true,
@@ -355,7 +490,22 @@ fn send_book_to_kindle(
 }
 
 #[tauri::command]
-fn send_markdown_to_kindle(
+async fn send_book_to_kindle(
+    ip: String,
+    port: u16,
+    user: Option<String>,
+    password: Option<String>,
+    remote_dir: String,
+    local_path: String,
+) -> Result<TransferResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        send_book_to_kindle_blocking(ip, port, user, password, remote_dir, local_path)
+    })
+    .await
+    .map_err(|e| format!("Lỗi tác vụ nền: {}", e))?
+}
+
+fn send_markdown_to_kindle_blocking(
     ip: String,
     port: u16,
     user: Option<String>,
@@ -383,7 +533,26 @@ fn send_markdown_to_kindle(
         md_path.to_string_lossy().to_string()
     };
 
-    send_book_to_kindle(ip, port, user, password, remote_dir, local_file_path)
+    send_book_to_kindle_blocking(ip, port, user, password, remote_dir, local_file_path)
+}
+
+#[tauri::command]
+async fn send_markdown_to_kindle(
+    ip: String,
+    port: u16,
+    user: Option<String>,
+    password: Option<String>,
+    remote_dir: String,
+    title: String,
+    author: String,
+    content: String,
+    as_epub: bool,
+) -> Result<TransferResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        send_markdown_to_kindle_blocking(ip, port, user, password, remote_dir, title, author, content, as_epub)
+    })
+    .await
+    .map_err(|e| format!("Lỗi tác vụ nền: {}", e))?
 }
 
 #[tauri::command]
@@ -470,36 +639,9 @@ fn scan_library(custom_dir: Option<String>) -> Result<Vec<BookMetadata>, String>
                         }
                     }
                 } else if ext == "cbz" {
-                    if let Ok(file) = File::open(&p) {
-                        if let Ok(mut archive) = zip::ZipArchive::new(file) {
-                            let mut image_names: Vec<String> = archive
-                                .file_names()
-                                .filter(|name| {
-                                    let lower = name.to_lowercase();
-                                    lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".png") || lower.ends_with(".webp")
-                                })
-                                .map(|s| s.to_string())
-                                .collect();
-                            image_names.sort();
-                            if let Some(first_img) = image_names.first() {
-                                if let Ok(mut zfile) = archive.by_name(first_img) {
-                                    let mut buf = Vec::new();
-                                    if zfile.read_to_end(&mut buf).is_ok() {
-                                        let mime = if first_img.to_lowercase().ends_with(".png") {
-                                            "image/png"
-                                        } else if first_img.to_lowercase().ends_with(".webp") {
-                                            "image/webp"
-                                        } else {
-                                            "image/jpeg"
-                                        };
-                                        cover_data_url = Some(format!("data:{};base64,{}", mime, BASE64.encode(&buf)));
-                                    }
-                                }
-                            }
-                            author = "Truyện tranh / Manga".to_string();
-                            description = format!("Tệp truyện tranh CBZ chứa {} trang ảnh", image_names.len());
-                        }
-                    }
+                    author = "Truyện tranh / Manga".to_string();
+                    description = "Tệp truyện tranh CBZ".to_string();
+                    cover_data_url = get_cbz_cover_data_url(&p);
                 } else if ext == "md" || ext == "txt" {
                     if let Ok(content) = fs::read_to_string(&p) {
                         for line in content.lines().take(5) {
@@ -511,6 +653,16 @@ fn scan_library(custom_dir: Option<String>) -> Result<Vec<BookMetadata>, String>
                         }
                         description = content.chars().take(200).collect();
                     }
+                } else if ext == "pdf" {
+                    let (pdf_t, pdf_a, pages) = get_pdf_info(&p);
+                    if !pdf_t.is_empty() {
+                        title = pdf_t;
+                    }
+                    if !pdf_a.is_empty() {
+                        author = pdf_a;
+                    }
+                    description = format!("Tài liệu PDF gồm {} trang", pages);
+                    cover_data_url = get_pdf_cover_data_url(&p);
                 }
 
                 books.push(BookMetadata {
@@ -727,6 +879,183 @@ fn flatten_toc<R: Read + Seek>(doc: &EpubDoc<R>, points: &[epub::doc::NavPoint],
     }
 }
 
+fn get_pdf_info(path: &Path) -> (String, String, usize) {
+    let mut title = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let mut author = "Tài liệu PDF".to_string();
+    let mut total_pages = 1usize;
+
+    if let Ok(output) = Command::new("pdfinfo").arg(path).output() {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                if line.starts_with("Pages:") {
+                    if let Some(cnt) = line.split_whitespace().nth(1) {
+                        if let Ok(n) = cnt.parse::<usize>() {
+                            total_pages = n.max(1);
+                        }
+                    }
+                } else if line.starts_with("Title:") {
+                    let t = line.trim_start_matches("Title:").trim();
+                    if !t.is_empty() {
+                        title = t.to_string();
+                    }
+                } else if line.starts_with("Author:") {
+                    let a = line.trim_start_matches("Author:").trim();
+                    if !a.is_empty() {
+                        author = a.to_string();
+                    }
+                }
+            }
+        }
+    }
+    (title, author, total_pages)
+}
+
+fn get_cache_dir() -> PathBuf {
+    let base = dirs::cache_dir().unwrap_or_else(|| {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/ka"));
+        home.join(".cache")
+    });
+    let dir = base.join("kareader").join("thumbs");
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+fn get_file_cache_key(path: &Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    if let Ok(meta) = path.metadata() {
+        meta.len().hash(&mut hasher);
+        if let Ok(mtime) = meta.modified() {
+            mtime.hash(&mut hasher);
+        }
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+fn get_pdf_cover_data_url(path: &Path) -> Option<String> {
+    let cache_dir = get_cache_dir();
+    let cache_key = get_file_cache_key(path);
+    let cached_thumb = cache_dir.join(format!("{}.jpg", cache_key));
+
+    if cached_thumb.exists() {
+        if let Ok(bytes) = fs::read(&cached_thumb) {
+            let b64 = BASE64.encode(&bytes);
+            return Some(format!("data:image/jpeg;base64,{}", b64));
+        }
+    }
+
+    let temp_prefix = format!("/tmp/kareader_thumb_{}", cache_key);
+    let status = Command::new("pdftoppm")
+        .args([
+            "-jpeg",
+            "-scale-to",
+            "240",
+            "-f",
+            "1",
+            "-l",
+            "1",
+            "-singlefile",
+        ])
+        .arg(path)
+        .arg(&temp_prefix)
+        .status()
+        .ok()?;
+
+    let out_jpg = format!("{}.jpg", temp_prefix);
+    if status.success() && Path::new(&out_jpg).exists() {
+        if let Ok(bytes) = fs::read(&out_jpg) {
+            let _ = fs::write(&cached_thumb, &bytes);
+            let _ = fs::remove_file(&out_jpg);
+            let b64 = BASE64.encode(&bytes);
+            return Some(format!("data:image/jpeg;base64,{}", b64));
+        }
+        let _ = fs::remove_file(&out_jpg);
+    }
+    None
+}
+
+fn get_cbz_cover_data_url(path: &Path) -> Option<String> {
+    let cache_dir = get_cache_dir();
+    let cache_key = get_file_cache_key(path);
+    let cached_thumb = cache_dir.join(format!("{}.jpg", cache_key));
+
+    if cached_thumb.exists() {
+        if let Ok(bytes) = fs::read(&cached_thumb) {
+            let b64 = BASE64.encode(&bytes);
+            return Some(format!("data:image/jpeg;base64,{}", b64));
+        }
+    }
+
+    let file = File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut image_names: Vec<String> = archive
+        .file_names()
+        .filter(|name| {
+            let lower = name.to_lowercase();
+            lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".png") || lower.ends_with(".webp")
+        })
+        .map(|s| s.to_string())
+        .collect();
+    image_names.sort();
+    if let Some(first_img) = image_names.first() {
+        let mut zfile = archive.by_name(first_img).ok()?;
+        let mut buf = Vec::new();
+        if zfile.read_to_end(&mut buf).is_ok() {
+            let _ = fs::write(&cached_thumb, &buf);
+            let mime = if first_img.to_lowercase().ends_with(".png") {
+                "image/png"
+            } else if first_img.to_lowercase().ends_with(".webp") {
+                "image/webp"
+            } else {
+                "image/jpeg"
+            };
+            return Some(format!("data:{};base64,{}", mime, BASE64.encode(&buf)));
+        }
+    }
+    None
+}
+
+fn render_pdf_page_to_html(path: &Path, page_1_based: usize, total_pages: usize) -> Result<String, String> {
+    let temp_prefix = format!("/tmp/oma_pdf_pg_{}_{}", std::process::id(), page_1_based);
+    let output = Command::new("pdftoppm")
+        .args([
+            "-png",
+            "-r",
+            "150",
+            "-f",
+            &page_1_based.to_string(),
+            "-l",
+            &page_1_based.to_string(),
+            "-singlefile",
+        ])
+        .arg(path)
+        .arg(&temp_prefix)
+        .output()
+        .map_err(|e| format!("Không thể chạy pdftoppm: {}", e))?;
+
+    let out_png = format!("{}.png", temp_prefix);
+    if !output.status.success() || !Path::new(&out_png).exists() {
+        return Err("Lỗi kết xuất trang PDF sang hình ảnh".to_string());
+    }
+
+    let bytes = fs::read(&out_png).map_err(|e| e.to_string())?;
+    let _ = fs::remove_file(&out_png);
+    let b64 = BASE64.encode(&bytes);
+    let data_url = format!("data:image/png;base64,{}", b64);
+
+    Ok(format!(
+        r#"<div style="text-align: center; margin: 0 auto; max-width: 100%;">
+            <img src="{}" style="max-height: 85vh; max-width: 100%; object-fit: contain; border-radius: 6px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); margin: 0 auto;" />
+            <div style="font-family: monospace; font-size: 11px; opacity: 0.6; margin-top: 12px;">Trang {} / {}</div>
+        </div>"#,
+        data_url, page_1_based, total_pages
+    ))
+}
+
 #[tauri::command]
 fn open_book_reader(path: String) -> Result<ReaderSession, String> {
     let p = Path::new(&path);
@@ -889,6 +1218,35 @@ fn open_book_reader(path: String) -> Result<ReaderSession, String> {
             chapter_html,
             raw_text: None,
         })
+    } else if ext == "pdf" {
+        let (pdf_t, pdf_a, total_pages) = get_pdf_info(p);
+        if !pdf_t.is_empty() {
+            title = pdf_t;
+        }
+        if !pdf_a.is_empty() {
+            author = pdf_a;
+        }
+        let mut toc = Vec::new();
+        for i in 0..total_pages {
+            toc.push(ReaderTocItem {
+                title: format!("Trang {}", i + 1),
+                chapter_index: i,
+            });
+        }
+        let chapter_html = render_pdf_page_to_html(p, 1, total_pages)?;
+
+        Ok(ReaderSession {
+            path,
+            filename,
+            title,
+            author,
+            format: ext,
+            total_chapters: total_pages,
+            current_chapter: 0,
+            toc,
+            chapter_html,
+            raw_text: None,
+        })
     } else {
         let content = fs::read_to_string(p).map_err(|e| e.to_string())?;
         let paragraphs: Vec<String> = content
@@ -992,6 +1350,16 @@ fn get_book_chapter(path: String, chapter_index: usize) -> Result<ReaderChapter,
         } else {
             Err("Không tìm thấy trang ảnh yêu cầu".to_string())
         }
+    } else if ext == "pdf" {
+        let (_, _, total_pages) = get_pdf_info(p);
+        let target_page = (chapter_index + 1).min(total_pages).max(1);
+        let html = render_pdf_page_to_html(p, target_page, total_pages)?;
+
+        Ok(ReaderChapter {
+            chapter_index,
+            title: format!("Trang {}/{}", target_page, total_pages),
+            html,
+        })
     } else {
         open_book_reader(path).map(|s| ReaderChapter {
             chapter_index: 0,
@@ -1004,6 +1372,12 @@ fn get_book_chapter(path: String, chapter_index: usize) -> Result<ReaderChapter,
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|_app| {
+            // Ensure XDG config directory (~/.config/kareader) and data directory (~/.local/share/kareader/books)
+            // are initialized and seeded on app startup
+            let _ = load_settings();
+            Ok(())
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
@@ -1023,17 +1397,55 @@ pub fn run() {
             get_book_chapter
         ])
         .run(tauri::generate_context!())
-        .expect("error while running omawrite-reader application");
+        .expect("error while running kareader application");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn resolve_test_file(filename: &str) -> Option<String> {
+        let xdg_path = get_default_data_dir().join(filename);
+        if xdg_path.exists() {
+            return Some(xdg_path.to_string_lossy().to_string());
+        }
+        let legacy_path = PathBuf::from("/home/ka/Books").join(filename);
+        if legacy_path.exists() {
+            return Some(legacy_path.to_string_lossy().to_string());
+        }
+        None
+    }
+
+    #[test]
+    fn test_load_and_save_kareader_config() {
+        let settings = load_settings();
+        let config_dir = get_config_dir();
+        assert!(config_dir.ends_with("kareader"));
+        assert!(config_dir.join("config.json").exists(), "config.json should exist in {:?}", config_dir);
+        assert!(config_dir.join("settings.json").exists(), "settings.json should exist in {:?}", config_dir);
+
+        let data_dir = PathBuf::from(&settings.local_library_dir);
+        assert!(data_dir.exists(), "Data library dir should exist: {:?}", data_dir);
+        assert!(data_dir.to_string_lossy().contains("kareader/books"));
+        println!("Config dir verified: {:?}", config_dir);
+        println!("Data dir verified: {:?}", data_dir);
+    }
+
+    #[test]
+    fn test_bench_scan_library() {
+        let t0 = std::time::Instant::now();
+        let books = scan_library(None).unwrap();
+        let elapsed = t0.elapsed();
+        println!("scan_library took {:?} for {} books", elapsed, books.len());
+        for b in &books {
+            let cover_size = b.cover_data_url.as_ref().map(|s| s.len()).unwrap_or(0);
+            println!("Book: {:<35} format: {:<5} cover_len: {} bytes", b.title, b.format, cover_size);
+        }
+    }
+
     #[test]
     fn test_epub_reader() {
-        let path = "/home/ka/Books/Ghi chép mới.epub".to_string();
-        if Path::new(&path).exists() {
+        if let Some(path) = resolve_test_file("Ghi chép mới.epub") {
             let res = open_book_reader(path);
             assert!(res.is_ok(), "Failed to open epub: {:?}", res.err());
             let session = res.unwrap();
@@ -1044,8 +1456,27 @@ mod tests {
     }
 
     #[test]
+    fn test_pdf_reader() {
+        if let Some(path) = resolve_test_file("3D LAB_HOP DONG GIA CONG NGUYEN NGOC PHONG.pdf") {
+            let res = open_book_reader(path.clone());
+            assert!(res.is_ok(), "Failed to open pdf: {:?}", res.err());
+            let session = res.unwrap();
+            println!("PDF Title: {}", session.title);
+            println!("PDF Total Pages: {}", session.total_chapters);
+            assert!(session.total_chapters >= 1);
+            assert_eq!(session.format, "pdf");
+            assert!(session.chapter_html.contains("data:image/png;base64,"));
+
+            let ch2 = get_book_chapter(path, 1).unwrap();
+            assert_eq!(ch2.chapter_index, 1);
+            assert!(ch2.html.contains("data:image/png;base64,"));
+        }
+    }
+
+    #[test]
     fn test_txt_reader() {
-        let path = "/home/ka/Books/chat-Nguyên Nhân Sâu Xa Của Tai Biến Theo Các Góc Nhìn.txt".to_string();
+        let path_opt = resolve_test_file("chat-Nguyên Nhân Sâu Xa Của Tai Biến Theo Các Góc Nhìn.txt");
+        let path = path_opt.unwrap_or_else(|| "/home/ka/Books/chat-Nguyên Nhân Sâu Xa Của Tai Biến Theo Các Góc Nhìn.txt".to_string());
         if Path::new(&path).exists() {
             let res = open_book_reader(path);
             assert!(res.is_ok(), "Failed to open txt: {:?}", res.err());
@@ -1090,5 +1521,25 @@ mod tests {
         assert!(ch2.html.contains(r#"<img src="data:image/png;base64,"#));
 
         let _ = fs::remove_file(test_cbz_path);
+    }
+
+    #[test]
+    fn test_send_to_kindle_cbz() {
+        if let Some(cbz_path) = resolve_test_file("Sam and Lucky 1 - The Perfect Pet.cbz") {
+            if let Ok(addr) = "192.168.1.15:2222".parse() {
+                if TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok() {
+                    let res = send_book_to_kindle_blocking(
+                        "192.168.1.15".to_string(),
+                        2222,
+                        Some("root".to_string()),
+                        Some("".to_string()),
+                        "/mnt/us/documents/Books".to_string(),
+                        cbz_path.to_string(),
+                    );
+                    println!("CBZ Send Result: {:?}", res);
+                    assert!(res.is_ok(), "Failed to send CBZ: {:?}", res.err());
+                }
+            }
+        }
     }
 }
