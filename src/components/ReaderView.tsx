@@ -21,6 +21,7 @@ interface ReaderViewProps {
   session: ReaderSession;
   settings: AppSettings;
   onClose: () => void;
+  onOpenEditor?: () => void;
   onEditBook?: (path: string, filename: string, content: string) => void;
   onSyncToKindle: (path: string) => Promise<void>;
   onNotify: (msg: string, type?: 'success' | 'error') => void;
@@ -32,6 +33,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   session,
   settings: _settings,
   onClose,
+  onOpenEditor,
   onEditBook,
   onSyncToKindle,
   onNotify,
@@ -243,16 +245,27 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         <header
           className={`h-14 border-b shrink-0 px-4 flex items-center justify-between select-none z-20 ${themeStyles.barBg} ${themeStyles.border}`}
         >
-          {/* Left: Back & Title */}
-          <div className="flex items-center gap-3 min-w-0 flex-1">
+          {/* Left: Back to Library or Editor */}
+          <div className="flex items-center gap-2 min-w-0 flex-1">
             <button
               onClick={onClose}
               className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition-all cursor-pointer ${themeStyles.border} hover:opacity-80`}
               title="Quay lại Thư viện (Esc)"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Thư viện</span>
+              <span className="hidden sm:inline">Thư viện</span>
             </button>
+
+            {onOpenEditor && (
+              <button
+                onClick={onOpenEditor}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition-all cursor-pointer ${themeStyles.border} hover:opacity-80`}
+                title="Quay lại Trình soạn thảo (Omawrite)"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Soạn thảo</span>
+              </button>
+            )}
 
             <div className="h-5 w-[1px] bg-current opacity-20 mx-1 shrink-0" />
 

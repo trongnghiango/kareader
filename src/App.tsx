@@ -468,21 +468,23 @@ export const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#111c18] text-[#C1C497]">
-      {/* Header Bar */}
-      <Header
-        currentTab={currentTab}
-        onTabChange={setCurrentTab}
-        settings={settings}
-        kindleConnected={kindleConnected}
-        checkingConnection={checkingConnection}
-        syncing={syncingAll}
-        readingBookTitle={readingSession?.title}
-        onSyncAll={handleSyncAll}
-        onCheckConnection={checkConnection}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onImportFile={handleImportFile}
-        onExportCurrent={handleExportCurrent}
-      />
+      {/* Header Bar (Hidden when in Reader mode to eliminate double headers) */}
+      {currentTab !== 'reader' && (
+        <Header
+          currentTab={currentTab}
+          onTabChange={setCurrentTab}
+          settings={settings}
+          kindleConnected={kindleConnected}
+          checkingConnection={checkingConnection}
+          syncing={syncingAll}
+          readingBookTitle={readingSession?.title}
+          onSyncAll={handleSyncAll}
+          onCheckConnection={checkConnection}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          onImportFile={handleImportFile}
+          onExportCurrent={handleExportCurrent}
+        />
+      )}
 
       {/* Main Content Area */}
       <main className="flex-1 flex overflow-hidden">
@@ -491,6 +493,7 @@ export const App: React.FC = () => {
             session={readingSession}
             settings={settings}
             onClose={() => setCurrentTab('local')}
+            onOpenEditor={() => setCurrentTab('editor')}
             onEditBook={handleEditFromReader}
             onSyncToKindle={handleSyncBookToKindle}
             onNotify={notify}
@@ -502,7 +505,6 @@ export const App: React.FC = () => {
             fonts={fonts}
             currentFont={settings.editor_font || 'IBM Plex Mono'}
             onSelectFont={handleSelectFont}
-            onChangeDoc={setCurrentDoc}
             onSaveDoc={handleSaveDoc}
             onNewDoc={handleNewDoc}
             onOpenFile={handleOpenFileFromDisk}
