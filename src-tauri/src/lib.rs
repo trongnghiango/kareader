@@ -126,6 +126,31 @@ pub struct ReaderChapter {
     pub html: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct KualPackageInfo {
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub id: String,
+    pub folder_name: String,
+    pub file_count: usize,
+    pub total_size_bytes: u64,
+    pub has_binary: bool,
+    pub has_database: bool,
+    pub zip_path: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct KualInstallResult {
+    pub success: bool,
+    pub message: String,
+    pub target_dir: String,
+    pub preserved_db: bool,
+    pub files_extracted: usize,
+    pub duration_ms: u64,
+}
+
 fn get_config_dir() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/ka"));
@@ -550,6 +575,306 @@ async fn send_markdown_to_kindle(
 ) -> Result<TransferResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         send_markdown_to_kindle_blocking(ip, port, user, password, remote_dir, title, author, content, as_epub)
+    })
+    .await
+    .map_err(|e| format!("Lỗi tác vụ nền: {}", e))?
+}
+
+fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
+    let pattern = format!(r"(?s)<{tag}[^>]*>(.*?)</{tag}>");
+    if let Ok(re) = Regex::new(&pattern) {
+        if let Some(caps) = re.captures(xml) {
+            let val = caps.get(1)?.as_str().trim();
+            let cleaned = if val.starts_with("<![CDATA[") && val.ends_with("]]>") {
+                &val[9..val.len() - 3]
+            } else {
+                val
+            };
+            return Some(cleaned.trim().to_string());
+        }
+    }
+    None
+}
+
+fn inspect_kual_zip_blocking(zip_path: String) -> Result<KualPackageInfo, String> {
+    let path = Path::new(&zip_path);
+    if !path.exists() {
+        return Err(format!("File không tồn tại: {}", zip_path));
+    }
+
+    let file = File::open(path).map_err(|e| format!("Không thể mở file ZIP: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("File ZIP không hợp lệ: {}", e))?;
+
+    let mut config_xml_content: Option<String> = None;
+    let mut config_xml_path: Option<String> = None;
+    let mut total_size_bytes = 0u64;
+    let mut file_count = 0usize;
+    let mut has_binary = false;
+    let mut has_database = false;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| format!("Lỗi đọc mục trong file ZIP: {}", e))?;
+        let entry_name = entry.name().to_string();
+
+        if !entry.is_dir() {
+            file_count += 1;
+            total_size_bytes += entry.size();
+
+            let lower = entry_name.to_lowercase();
+            if lower.ends_with(".db") || lower.ends_with(".sqlite") || lower.ends_with(".sqlite3") {
+                has_database = true;
+            }
+            if lower.contains("/bin/") || lower.starts_with("bin/") || lower.ends_with(".sh") {
+                has_binary = true;
+            }
+
+            if entry_name.ends_with("config.xml") {
+                let mut content = String::new();
+                if entry.read_to_string(&mut content).is_ok() {
+                    config_xml_content = Some(content);
+                    config_xml_path = Some(entry_name.clone());
+                }
+            }
+        }
+    }
+
+    let xml = config_xml_content.ok_or_else(|| {
+        "Tệp ZIP không phải là KUAL Extension hợp lệ (không tìm thấy config.xml)".to_string()
+    })?;
+
+    let raw_folder = if let Some(ref c_path) = config_xml_path {
+        let parts: Vec<&str> = c_path.split('/').filter(|s| !s.is_empty()).collect();
+        if parts.len() >= 2 {
+            if parts[0] == "extensions" && parts.len() >= 3 {
+                parts[1].to_string()
+            } else {
+                parts[0].to_string()
+            }
+        } else {
+            path.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "kual_app".to_string())
+                .replace("-kual", "")
+                .replace("_kual", "")
+        }
+    } else {
+        "kual_app".to_string()
+    };
+
+    let folder_name: String = raw_folder
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
+    let folder_name = if folder_name.is_empty() {
+        "kual_app".to_string()
+    } else {
+        folder_name
+    };
+
+    let name = extract_xml_tag(&xml, "name").unwrap_or_else(|| folder_name.clone());
+    let version = extract_xml_tag(&xml, "version").unwrap_or_else(|| "1.0.0".to_string());
+    let author = extract_xml_tag(&xml, "author").unwrap_or_else(|| "Unknown".to_string());
+    let id = extract_xml_tag(&xml, "id").unwrap_or_else(|| format!("kual.extension.{}", folder_name));
+    let description = extract_xml_tag(&xml, "description");
+
+    Ok(KualPackageInfo {
+        name,
+        version,
+        author,
+        id,
+        folder_name,
+        file_count,
+        total_size_bytes,
+        has_binary,
+        has_database,
+        zip_path,
+        description,
+    })
+}
+
+#[tauri::command]
+async fn inspect_kual_zip(zip_path: String) -> Result<KualPackageInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || inspect_kual_zip_blocking(zip_path))
+        .await
+        .map_err(|e| format!("Lỗi tác vụ nền: {}", e))?
+}
+
+fn install_kual_extension_blocking(
+    ip: String,
+    port: u16,
+    user: Option<String>,
+    password: Option<String>,
+    zip_path: String,
+    preserve_db: bool,
+) -> Result<KualInstallResult, String> {
+    let start_time = std::time::Instant::now();
+
+    // 1. Pre-flight inspect package locally
+    let pkg_info = inspect_kual_zip_blocking(zip_path.clone())?;
+    let folder_name = &pkg_info.folder_name;
+
+    // Validate folder name against malicious characters
+    if folder_name.is_empty() || !folder_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err("Tên thư mục extension chứa ký tự không hợp lệ hoặc không an toàn".to_string());
+    }
+
+    let target_dir = format!("/mnt/us/extensions/{}", folder_name);
+
+    // 2. Connect to Kindle SSH/SFTP
+    let addr = format!("{}:{}", ip, port);
+    let socket = TcpStream::connect_timeout(
+        &addr.parse().map_err(|e| format!("Địa chỉ Kindle không hợp lệ: {}", e))?,
+        Duration::from_secs(5),
+    ).map_err(|e| format!("Không kết nối được tới Kindle tại {}: {}. Vui lòng kiểm tra màn hình Kindle có sáng và đã bật SSH Server trong KOReader chưa.", addr, e))?;
+
+    let _ = socket.set_nodelay(true);
+    let _ = socket.set_read_timeout(Some(Duration::from_secs(60)));
+    let _ = socket.set_write_timeout(Some(Duration::from_secs(60)));
+
+    let mut sess = Session::new().map_err(|e| e.to_string())?;
+    sess.set_tcp_stream(socket);
+    sess.set_timeout(60_000);
+    sess.handshake().map_err(|e| format!("SSH handshake thất bại: {}", e))?;
+
+    let username = user.unwrap_or_else(|| "root".to_string());
+    let pw = password.unwrap_or_default();
+    authenticate_session(&mut sess, &username, &pw)?;
+
+    // 3. SFTP Upload local zip to /tmp/kual_upload.zip
+    {
+        let sftp = sess.sftp().map_err(|e| format!("Không mở được SFTP channel: {}", e))?;
+        sftp_mkdir_p(&sftp, "/tmp");
+        sftp_mkdir_p(&sftp, "/mnt/us/extensions");
+
+        let remote_zip = "/tmp/kual_upload.zip";
+        let mut remote_file = sftp.open_mode(
+            Path::new(remote_zip),
+            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+            0o644,
+            OpenType::File,
+        ).map_err(|e| format!("Không thể tạo file tạm trên Kindle ({}): {}", remote_zip, e))?;
+
+        let mut local_file = File::open(&zip_path).map_err(|e| e.to_string())?;
+        let mut buffer = [0u8; 16 * 1024];
+        loop {
+            let bytes_read = local_file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if bytes_read == 0 {
+                break;
+            }
+            let mut slice = &buffer[..bytes_read];
+            while !slice.is_empty() {
+                let written = remote_file.write(slice).map_err(|e| format!("Lỗi ghi dữ liệu SFTP: {}", e))?;
+                if written == 0 {
+                    return Err("SFTP connection stalled khi truyền file ZIP".to_string());
+                }
+                slice = &slice[written..];
+            }
+        }
+        let _ = remote_file.flush();
+    }
+
+    // 4. Remote execution via SSH exec channel
+    let preserve_flag = if preserve_db { "1" } else { "0" };
+    let script = format!(
+        r#"sh -c '
+set -e
+EXTDIR="/mnt/us/extensions/{folder}"
+BACKUP_DIR="/tmp/kual_backup_$$"
+TEMP_UNPACK="/tmp/kual_unpack_$$"
+ZIP_FILE="/tmp/kual_upload.zip"
+
+cleanup() {{
+    rm -rf "$TEMP_UNPACK" "$BACKUP_DIR" "$ZIP_FILE" 2>/dev/null || true
+}}
+trap cleanup EXIT
+
+if [ "{preserve_flag}" = "1" ] && [ -d "$EXTDIR" ]; then
+    mkdir -p "$BACKUP_DIR"
+    if [ -d "$EXTDIR/data" ]; then
+        mkdir -p "$BACKUP_DIR/data"
+        cp -f "$EXTDIR"/data/*.db "$BACKUP_DIR/data/" 2>/dev/null || true
+        cp -f "$EXTDIR"/data/*.sqlite* "$BACKUP_DIR/data/" 2>/dev/null || true
+    fi
+    cp -f "$EXTDIR"/*.db "$BACKUP_DIR/" 2>/dev/null || true
+fi
+
+mkdir -p "$TEMP_UNPACK"
+unzip -o -q "$ZIP_FILE" -d "$TEMP_UNPACK"
+
+# Clean old extension directory to purge obsolete/orphaned files
+rm -rf "$EXTDIR"
+mkdir -p "$EXTDIR"
+if [ -d "$TEMP_UNPACK/extensions/{folder}" ]; then
+    cp -rf "$TEMP_UNPACK/extensions/{folder}/." "$EXTDIR/"
+elif [ -d "$TEMP_UNPACK/{folder}" ]; then
+    cp -rf "$TEMP_UNPACK/{folder}/." "$EXTDIR/"
+else
+    cp -rf "$TEMP_UNPACK/." "$EXTDIR/"
+fi
+
+if [ "{preserve_flag}" = "1" ] && [ -d "$BACKUP_DIR" ]; then
+    cp -rf "$BACKUP_DIR/." "$EXTDIR/" 2>/dev/null || true
+fi
+
+chmod -R 755 "$EXTDIR" 2>/dev/null || true
+if [ -d "$EXTDIR/bin" ]; then
+    chmod +x "$EXTDIR/bin/"* 2>/dev/null || true
+fi
+
+sync
+
+echo "KUAL_INSTALL_SUCCESS"
+'
+"#,
+        folder = folder_name,
+        preserve_flag = preserve_flag
+    );
+
+    let mut channel = sess.channel_session().map_err(|e| format!("Không thể mở SSH channel: {}", e))?;
+    channel.exec(&script).map_err(|e| format!("Không thể thực thi script cài đặt trên Kindle: {}", e))?;
+
+    let mut stdout_str = String::new();
+    channel.read_to_string(&mut stdout_str).map_err(|e| format!("Lỗi đọc kết quả cài đặt: {}", e))?;
+
+    let mut stderr_str = String::new();
+    let mut stderr_channel = channel.stderr();
+    let _ = stderr_channel.read_to_string(&mut stderr_str);
+
+    channel.wait_close().map_err(|e| format!("Lỗi hoàn tất SSH channel: {}", e))?;
+    let exit_code = channel.exit_status().unwrap_or(0);
+
+    if exit_code != 0 || !stdout_str.contains("KUAL_INSTALL_SUCCESS") {
+        return Err(format!(
+            "Lỗi cài đặt KUAL Extension trên Kindle (mã lỗi {}): {} {}",
+            exit_code, stdout_str, stderr_str
+        ));
+    }
+
+    let duration_ms = start_time.elapsed().as_millis() as u64;
+    Ok(KualInstallResult {
+        success: true,
+        message: format!(
+            "Đã cài đặt thành công extension '{}' ({}) vào {}!",
+            pkg_info.name, pkg_info.version, target_dir
+        ),
+        target_dir,
+        preserved_db: preserve_db && pkg_info.has_database,
+        files_extracted: pkg_info.file_count,
+        duration_ms,
+    })
+}
+
+#[tauri::command]
+async fn install_kual_extension(
+    ip: String,
+    port: u16,
+    user: Option<String>,
+    password: Option<String>,
+    zip_path: String,
+    preserve_db: bool,
+) -> Result<KualInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        install_kual_extension_blocking(ip, port, user, password, zip_path, preserve_db)
     })
     .await
     .map_err(|e| format!("Lỗi tác vụ nền: {}", e))?
@@ -1394,7 +1719,9 @@ pub fn run() {
             scan_library,
             export_markdown_to_epub,
             open_book_reader,
-            get_book_chapter
+            get_book_chapter,
+            inspect_kual_zip,
+            install_kual_extension
         ])
         .run(tauri::generate_context!())
         .expect("error while running kareader application");
@@ -1521,6 +1848,86 @@ mod tests {
         assert!(ch2.html.contains(r#"<img src="data:image/png;base64,"#));
 
         let _ = fs::remove_file(test_cbz_path);
+    }
+
+    #[test]
+    fn test_inspect_kual_zip_with_gach() {
+        let gach_zip = "/home/ka/Repos/github.com/trongnghiango/gach-kindle/gach-kual.zip";
+        if Path::new(gach_zip).exists() {
+            let res = inspect_kual_zip_blocking(gach_zip.to_string());
+            assert!(res.is_ok(), "Failed to inspect gach-kual.zip: {:?}", res.err());
+            let info = res.unwrap();
+            println!("Inspected KUAL Package: {:?}", info);
+            assert_eq!(info.name, "GACH");
+            assert_eq!(info.version, "1.0.0");
+            assert_eq!(info.folder_name, "gach");
+            assert!(info.file_count >= 40);
+            assert!(info.has_binary);
+            assert!(info.has_database);
+            assert_eq!(info.id, "com.trongnghiango.gach");
+        }
+    }
+
+    #[test]
+    fn test_inspect_kual_zip_mock() {
+        let test_zip = "/tmp/test_kual_extension.zip";
+        {
+            let file = File::create(test_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::FileOptions::default();
+
+            zip.start_file("myextension/config.xml", options).unwrap();
+            let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<extension>
+  <information>
+    <name>My Test Extension</name>
+    <version>2.1.0</version>
+    <author>Tester</author>
+    <id>org.test.ext</id>
+  </information>
+</extension>"#;
+            zip.write_all(xml.as_bytes()).unwrap();
+
+            zip.start_file("myextension/bin/run.sh", options).unwrap();
+            zip.write_all(b"#!/bin/sh
+echo hello
+").unwrap();
+
+            zip.start_file("myextension/data/data.db", options).unwrap();
+            zip.write_all(b"fake sqlite db bytes").unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let res = inspect_kual_zip_blocking(test_zip.to_string());
+        assert!(res.is_ok(), "Failed to inspect mock kual zip: {:?}", res.err());
+        let info = res.unwrap();
+        assert_eq!(info.name, "My Test Extension");
+        assert_eq!(info.version, "2.1.0");
+        assert_eq!(info.author, "Tester");
+        assert_eq!(info.id, "org.test.ext");
+        assert_eq!(info.folder_name, "myextension");
+        assert_eq!(info.file_count, 3);
+        assert!(info.has_binary);
+        assert!(info.has_database);
+
+        let _ = fs::remove_file(test_zip);
+    }
+
+    #[test]
+    fn test_inspect_kual_zip_non_kual() {
+        let test_zip = "/tmp/test_non_kual.zip";
+        {
+            let file = File::create(test_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::FileOptions::default();
+            zip.start_file("hello.txt", options).unwrap();
+            zip.write_all(b"hello world").unwrap();
+            zip.finish().unwrap();
+        }
+        let res = inspect_kual_zip_blocking(test_zip.to_string());
+        assert!(res.is_err(), "Non-kual zip should fail inspection");
+        let _ = fs::remove_file(test_zip);
     }
 
     #[test]

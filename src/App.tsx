@@ -7,10 +7,13 @@ import { EditorView, EditorViewRef } from './components/EditorView';
 import { LibraryView } from './components/LibraryView';
 import { ReaderView } from './components/ReaderView';
 import { SettingsModal } from './components/SettingsModal';
+import { KualInstallModal } from './components/KualInstallModal';
 import {
   AppSettings,
   BookMetadata,
   EditorDocument,
+  KualInstallResult,
+  KualPackageInfo,
   OmarchyTheme,
   ReaderSession,
   TransferResult,
@@ -39,6 +42,8 @@ export const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [savingDoc, setSavingDoc] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string>('Tài liệu mới');
+  const [kualPackageInfo, setKualPackageInfo] = useState<KualPackageInfo | null>(null);
+  const [isKualModalOpen, setIsKualModalOpen] = useState(false);
 
   // Font size state
   const [fontSize, setFontSize] = useState<number>(() => {
@@ -192,6 +197,19 @@ export const App: React.FC = () => {
             setIsDragging(false);
             const paths = event.payload.paths;
             if (paths && paths.length > 0) {
+              // Intercept single .zip dropped to check if it's a KUAL extension package
+              if (paths.length === 1 && paths[0].toLowerCase().endsWith('.zip')) {
+                try {
+                  notify(`Đang phân tích gói KUAL: ${paths[0].split('/').pop()}...`, 'success');
+                  const info = await invoke<KualPackageInfo>('inspect_kual_zip', { zipPath: paths[0] });
+                  setKualPackageInfo(info);
+                  setIsKualModalOpen(true);
+                  return;
+                } catch {
+                  // Not a KUAL package, fallback to regular library import
+                }
+              }
+
               notify(`Đang nạp ${paths.length} file vào thư viện...`, 'success');
               let firstImportedPath = '';
               for (const p of paths) {
@@ -511,6 +529,50 @@ export const App: React.FC = () => {
     }
   };
 
+  // Open KUAL Extension Dialog & Wireless Installation
+  const handleOpenKualExtensionDialog = useCallback(async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [
+          {
+            name: 'KUAL Extension ZIP',
+            extensions: ['zip'],
+          },
+        ],
+      });
+      if (selected && typeof selected === 'string') {
+        notify(`Đang phân tích gói: ${selected.split('/').pop()}...`, 'success');
+        const info = await invoke<KualPackageInfo>('inspect_kual_zip', { zipPath: selected });
+        setKualPackageInfo(info);
+        setIsKualModalOpen(true);
+      }
+    } catch (err: any) {
+      notify(`Lỗi đọc gói KUAL: ${String(err)}`, 'error');
+    }
+  }, [notify]);
+
+  const handleInstallKual = useCallback(
+    async (preserveDb: boolean): Promise<KualInstallResult> => {
+      if (!kualPackageInfo) {
+        throw new Error('Chưa chọn gói KUAL Extension');
+      }
+      notify(`Đang tải ${kualPackageInfo.name} sang Kindle qua SFTP...`, 'success');
+      const result = await invoke<KualInstallResult>('install_kual_extension', {
+        ip: settings.kindle_ip,
+        port: settings.kindle_port,
+        user: settings.kindle_user || 'root',
+        password: settings.kindle_password || '',
+        zipPath: kualPackageInfo.zip_path,
+        preserveDb,
+      });
+      notify(`Đã cài đặt thành công ${kualPackageInfo.name} vào Kindle!`, 'success');
+      return result;
+    },
+    [kualPackageInfo, settings, notify]
+  );
+
   // Export Dialog
   const handleExportCurrent = async () => {
     try {
@@ -564,6 +626,7 @@ export const App: React.FC = () => {
         onSyncAll={handleSyncAll}
         syncing={syncingAll}
         onExportFile={handleExportCurrent}
+        onInstallKualExtension={handleOpenKualExtensionDialog}
         readingBookTitle={readingSession?.title}
         fonts={fonts}
         currentFont={settings.editor_font || 'JetBrainsMono Nerd Font'}
@@ -622,6 +685,17 @@ export const App: React.FC = () => {
         onTestConnection={handleTestConnection}
       />
 
+      {/* KUAL Extension Installer Modal */}
+      <KualInstallModal
+        isOpen={isKualModalOpen}
+        onClose={() => setIsKualModalOpen(false)}
+        packageInfo={kualPackageInfo}
+        settings={settings}
+        kindleConnected={kindleConnected}
+        onCheckConnection={checkConnection}
+        onInstall={handleInstallKual}
+      />
+
       {/* Drag and Drop Overlay */}
       {isDragging && (
         <div className="fixed inset-0 z-50 bg-[#0c1512]/90  border-4 border-dashed border-[#509475] flex flex-col items-center justify-center p-8 pointer-events-none animate-in fade-in duration-150">
@@ -632,7 +706,7 @@ export const App: React.FC = () => {
             Thả file để nạp vào Thư viện sách
           </h3>
           <p className="text-sm text-[#81B8A8] font-mono">
-            Hỗ trợ: .epub, .pdf, .md, .txt, .mobi
+            Hỗ trợ: .epub, .pdf, .md, .txt, .cbz, KUAL (.zip)
           </p>
         </div>
       )}

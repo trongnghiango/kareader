@@ -20,6 +20,7 @@ import {
   FileText,
   Monitor,
   Tablet,
+  Package,
 } from 'lucide-react';
 import { AppSettings, EditorDocument } from '../types';
 
@@ -43,6 +44,7 @@ export interface CornerHUDProps {
   onSyncAll: () => void;
   syncing?: boolean;
   onExportFile: () => void;
+  onInstallKualExtension?: () => void;
   readingBookTitle?: string | null;
   fonts: string[];
   currentFont: string;
@@ -76,6 +78,7 @@ export const CornerHUD: React.FC<CornerHUDProps> = ({
   onSyncAll,
   syncing = false,
   onExportFile,
+  onInstallKualExtension,
   readingBookTitle,
   fonts,
   currentFont,
@@ -419,6 +422,20 @@ export const CornerHUD: React.FC<CornerHUDProps> = ({
               <Download className="w-3.5 h-3.5 shrink-0" />
               <span>Xuất ra tệp (.md / .epub)...</span>
             </button>
+
+            {/* Install KUAL Extension (.zip) */}
+            {onInstallKualExtension && (
+              <button
+                onClick={() => {
+                  onInstallKualExtension();
+                  setActiveCorner(null);
+                }}
+                className="w-full flex items-center gap-2 py-1.5 px-2 rounded-lg text-[#81B8A8] hover:text-[#F7E8B2] hover:bg-[#509475]/15 transition-all cursor-pointer mt-0.5"
+              >
+                <Package className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                <span>Cài đặt KUAL Extension (.zip)...</span>
+              </button>
+            )}
           </div>
         )}
       </div>

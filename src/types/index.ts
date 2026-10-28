@@ -68,3 +68,26 @@ export interface EditorDocument {
   author?: string;
   isDirty?: boolean;
 }
+
+export interface KualPackageInfo {
+  name: string;
+  version: string;
+  author: string;
+  id: string;
+  folder_name: string;
+  file_count: number;
+  total_size_bytes: number;
+  has_binary: boolean;
+  has_database: boolean;
+  zip_path: string;
+  description?: string | null;
+}
+
+export interface KualInstallResult {
+  success: boolean;
+  message: string;
+  target_dir: string;
+  preserved_db: boolean;
+  files_extracted: number;
+  duration_ms: number;
+}
